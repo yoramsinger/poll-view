@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>מעקב סקרים – כנסת ישראל</title>
+  <style>
+    /* ── Reset & Base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b27;
+      --surface2:  #1d2337;
+      --border:    #2d3a56;
+      --text:      #cdd5e0;
+      --muted:     #6b7898;
+      --accent:    #4a8ecc;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      direction: rtl;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .header h1 { font-size: 1.1rem; font-weight: 600; color: #7eb8f7; }
+    .header-meta { font-size: 0.72rem; color: var(--muted); }
+
+    /* ── Filters ── */
+    .filters {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 20px 10px;
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+
+    .filter-section { flex: 1; min-width: 160px; }
+
+    .filter-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 5px;
+    }
+    .filter-header h3 {
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .btn-xs {
+      font-size: 0.62rem;
+      padding: 1px 5px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .btn-xs:hover { background: var(--surface2); color: var(--text); }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .chip {
+      padding: 2px 9px;
+      border-radius: 12px;
+      font-size: 0.73rem;
+      cursor: pointer;
+      border: 1.5px solid currentColor;
+      background: transparent;
+      color: var(--muted);
+      transition: all 0.13s;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .chip:hover { filter: brightness(1.3); }
+    .chip.active { color: #fff !important; font-weight: 500; }
+
+    /* ── Chart Wrapper ── */
+    .chart-wrap {
+      flex: 1;
+      position: relative;
+      padding: 14px 18px 10px;
+      min-height: 0;
+    }
+    #chart { display: none; width: 100% !important; height: 100% !important; }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 0.88rem;
+      pointer-events: none;
+    }
+    .overlay.hidden { display: none; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <span style="font-size:1.2rem">📊</span>
+    <h1>מעקב סקרים – כנסת ישראל</h1>
+  </div>
+  <span class="header-meta" id="badge"></span>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+  <div class="filter-section">
+    <div class="filter-header">
+      <h3>מפלגות</h3>
+      <button class="btn-xs" onclick="selectAll('party')">הכל</button>
+      <button class="btn-xs" onclick="deselectAll('party')">נקה</button>
+    </div>
+    <div class="chips" id="party-chips"></div>
+  </div>
+
+  <div class="filter-section" style="max-width:420px">
+    <div class="filter-header">
+      <h3>סוקרים</h3>
+      <button class="btn-xs" onclick="selectAll('pollster')">הכל</button>
+      <button class="btn-xs" onclick="deselectAll('pollster')">נקה</button>
+    </div>
+    <div class="chips" id="pollster-chips"></div>
+  </div>
+</div>
+
+<!-- Chart -->
+<div class="chart-wrap">
+  <div class="overlay" id="loading">טוען נתונים...</div>
+  <div class="overlay hidden" id="no-data">אין נתונים — בחרו מפלגות וסוקרים</div>
+  <canvas id="chart"></canvas>
+</div>
+
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+<script>
+// ─────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────
+const PARTIES = [
+  'הליכוד','יהדות התורה','ש״ס','כחול לבן','יש עתיד',
+  'חדש תע״ל','ישראל ביתנו','הדמוקרטים','הציונות הדתית',
+  'רע״מ','בל״ד','עוצמה יהודית','ביחד (בנט ולפיד)',
+  'ישר!','המילואימניקים','רשימה ערבית מאוחדת'
+];
+
+const PARTY_COLORS = {
+  'הליכוד':              '#1565C0',
+  'יהדות התורה':         '#6D4C41',
+  'ש״ס':                 '#F9A825',
+  'כחול לבן':            '#42A5F5',
+  'יש עתיד':             '#EF6C00',
+  'חדש תע״ל':            '#C62828',
+  'ישראל ביתנו':         '#546E7A',
+  'הדמוקרטים':           '#AD1457',
+  'הציונות הדתית':       '#2E7D32',
+  'רע״מ':                '#1B5E20',
+  'בל״ד':                '#4527A0',
+  'עוצמה יהודית':        '#B71C1C',
+  'ביחד (בנט ולפיד)':    '#00695C',
+  'ישר!':                '#0277BD',
+  'המילואימניקים':       '#827717',
+  'רשימה ערבית מאוחדת':  '#37474F'
+};
+
+const DASH_PATTERNS = [
+  [],
+  [8, 4],
+  [3, 3],
+  [12, 4, 3, 4],
+  [4, 8],
+  [8, 4, 2, 4],
+  [16, 4],
+  [6, 2]
+];
+
+// Default parties shown on load
+const DEFAULT_PARTIES = new Set([
+  'הליכוד','ביחד (בנט ולפיד)','ישר!','ש״ס',
+  'יהדות התורה','עוצמה יהודית','ישראל ביתנו','הציונות הדתית'
+]);
+
+// ─────────────────────────────────────────────
+//  STATE
+// ─────────────────────────────────────────────
+let allData        = [];
+let allPollsters   = [];
+let pollsterDash   = {};
+let selectedParties   = new Set();
+let selectedPollsters = new Set();
+let chartInst      = null;
+let hoveredIdx     = -1;
+
+// ─────────────────────────────────────────────
+//  UTILS
+// ─────────────────────────────────────────────
+function hex2rgba(hex, a) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ─────────────────────────────────────────────
+//  DATA
+// ─────────────────────────────────────────────
+function loadCSV() {
+  return new Promise((resolve, reject) => {
+    Papa.parse('polls.csv', {
+      download: true,
+      header: false,
+      skipEmptyLines: true,
+      complete: r => resolve(r.data),
+      error: e => reject(e)
+    });
+  });
+}
+
+function parseRows(rows) {
+  return rows.slice(1)
+    .map(row => {
+      const pollster = (row[5] || '').trim();
+      const date     = (row[1] || '').trim();
+      if (!date || !pollster) return null;
+
+      const mandates = {};
+      PARTIES.forEach((p, i) => {
+        const raw = (row[6 + i] ?? '').toString().trim();
+        const v   = raw === '' ? NaN : parseInt(raw, 10);
+        mandates[p] = isNaN(v) ? null : v;
+      });
+
+      return {
+        id:          row[0],
+        date,
+        displayDate: row[2],
+        media:       (row[4] || '').trim(),
+        pollster,
+        mandates
+      };
+    })
+    .filter(Boolean);
+}
+
+// ─────────────────────────────────────────────
+//  FILTER UI
+// ─────────────────────────────────────────────
+function renderPartyChips() {
+  const el = document.getElementById('party-chips');
+  el.innerHTML = '';
+  PARTIES.forEach(party => {
+    const color  = PARTY_COLORS[party];
+    const active = selectedParties.has(party);
+    const chip   = document.createElement('button');
+    chip.className   = 'chip' + (active ? ' active' : '');
+    chip.textContent = party;
+    chip.style.color       = color;
+    chip.style.borderColor = color;
+    if (active) chip.style.background = hex2rgba(color, 0.22);
+    chip.onclick = () => {
+      if (selectedParties.has(party)) {
+        selectedParties.delete(party);
+        chip.classList.remove('active');
+        chip.style.background = '';
+      } else {
+        selectedParties.add(party);
+        chip.classList.add('active');
+        chip.style.background = hex2rgba(color, 0.22);
+      }
+      rebuildChart();
+    };
+    el.appendChild(chip);
+  });
+}
+
+function renderPollsterChips() {
+  const el = document.getElementById('pollster-chips');
+  el.innerHTML = '';
+  allPollsters.forEach(pollster => {
+    const active = selectedPollsters.has(pollster);
+    const chip   = document.createElement('button');
+    chip.className   = 'chip' + (active ? ' active' : '');
+    chip.textContent = pollster;
+    chip.style.color       = '#4a8ecc';
+    chip.style.borderColor = '#4a8ecc';
+    if (active) chip.style.background = 'rgba(74,142,204,0.18)';
+    chip.onclick = () => {
+      if (selectedPollsters.has(pollster)) {
+        selectedPollsters.delete(pollster);
+        chip.classList.remove('active');
+        chip.style.background = '';
+      } else {
+        selectedPollsters.add(pollster);
+        chip.classList.add('active');
+        chip.style.background = 'rgba(74,142,204,0.18)';
+      }
+      rebuildChart();
+    };
+    el.appendChild(chip);
+  });
+}
+
+function selectAll(type) {
+  if (type === 'party')    { PARTIES.forEach(p => selectedParties.add(p));      renderPartyChips(); }
+  else                     { allPollsters.forEach(p => selectedPollsters.add(p)); renderPollsterChips(); }
+  rebuildChart();
+}
+
+function deselectAll(type) {
+  if (type === 'party')    { selectedParties.clear();    renderPartyChips(); }
+  else                     { selectedPollsters.clear();  renderPollsterChips(); }
+  rebuildChart();
+}
+
+// ─────────────────────────────────────────────
+//  DATASETS
+// ─────────────────────────────────────────────
+function buildDatasets() {
+  const datasets = [];
+  for (const party of selectedParties) {
+    const color = PARTY_COLORS[party] || '#888';
+    for (const pollster of selectedPollsters) {
+      const points = allData
+        .filter(d => d.pollster === pollster && d.mandates[party] !== null)
+        .map(d => ({ x: d.date, y: d.mandates[party], _row: d }))
+        .sort((a, b) => (a.x < b.x ? -1 : 1));
+      if (!points.length) continue;
+
+      datasets.push({
+        label:            `${party} – ${pollster}`,
+        data:             points,
+        borderColor:      color,
+        backgroundColor:  hex2rgba(color, 0.07),
+        borderWidth:      2,
+        borderDash:       pollsterDash[pollster] || [],
+        pointRadius:      0,
+        pointHoverRadius: 5,
+        tension:          0.3,
+        fill:             false,
+        _baseColor:       color,
+        _party:           party,
+        _pollster:        pollster
+      });
+    }
+  }
+  return datasets;
+}
+
+// ─────────────────────────────────────────────
+//  HOVER PLUGIN
+// ─────────────────────────────────────────────
+const hoverPlugin = {
+  id: 'lineHover',
+  afterEvent(chart, args) {
+    const e = args.event;
+    if (e.type !== 'mousemove' && e.type !== 'mouseleave') return;
+
+    let newIdx = -1;
+    if (e.type === 'mousemove') {
+      const els = chart.getElementsAtEventForMode(
+        e.native, 'nearest', { intersect: false }, true
+      );
+      if (els.length) newIdx = els[0].datasetIndex;
+    }
+
+    if (newIdx === hoveredIdx) return;
+    hoveredIdx = newIdx;
+
+    chart.data.datasets.forEach((ds, i) => {
+      const on = newIdx === -1 || i === newIdx;
+      ds.borderColor  = on ? ds._baseColor : hex2rgba(ds._baseColor, 0.06);
+      ds.borderWidth  = (on && newIdx !== -1) ? 3.5 : 2;
+      ds.pointRadius  = (on && newIdx !== -1) ? 3   : 0;
+    });
+
+    chart.update('none');
+  }
+};
+
+// ─────────────────────────────────────────────
+//  CHART
+// ─────────────────────────────────────────────
+function createChart(datasets) {
+  const canvas = document.getElementById('chart');
+  chartInst = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 250 },
+      interaction: { mode: 'nearest', axis: 'xy', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          rtl: true,
+          textDirection: 'rtl',
+          backgroundColor: 'rgba(10,13,22,0.96)',
+          borderColor: '#2d3a56',
+          borderWidth: 1,
+          titleColor: '#cdd5e0',
+          bodyColor:  '#8a97b5',
+          titleFont:  { size: 12 },
+          bodyFont:   { size: 12 },
+          padding: 11,
+          callbacks: {
+            title(items) {
+              return items[0].raw?._row?.displayDate ?? items[0].label;
+            },
+            label(item) {
+              const ds  = item.dataset;
+              const row = item.raw?._row;
+              const med = row ? ` (${row.media})` : '';
+              return ` ${ds._party}: ${item.raw.y} מנדטים — ${ds._pollster}${med}`;
+            },
+            labelColor(item) {
+              const c = item.dataset._baseColor;
+              return { borderColor: c, backgroundColor: c };
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            displayFormats: {
+              day:     'dd/MM',
+              week:    'dd/MM',
+              month:   "MMM ''yy",
+              quarter: "QQQ ''yy",
+              year:    'yyyy'
+            }
+          },
+          border: { display: false },
+          grid:   { color: '#1a2038' },
+          ticks:  { color: '#6b7898', maxTicksLimit: 14, maxRotation: 0 }
+        },
+        y: {
+          title: {
+            display: true,
+            text: 'מנדטים',
+            color: '#6b7898',
+            font: { size: 11 }
+          },
+          border: { display: false },
+          grid:   { color: '#1a2038' },
+          ticks:  { color: '#6b7898', stepSize: 5 },
+          min: 0
+        }
+      }
+    },
+    plugins: [hoverPlugin]
+  });
+}
+
+function rebuildChart() {
+  const datasets = buildDatasets();
+  hoveredIdx = -1;
+
+  const canvas  = document.getElementById('chart');
+  const noData  = document.getElementById('no-data');
+
+  if (!datasets.length) {
+    canvas.style.display = 'none';
+    noData.classList.remove('hidden');
+    if (chartInst) { chartInst.destroy(); chartInst = null; }
+    return;
+  }
+
+  noData.classList.add('hidden');
+  canvas.style.display = 'block';
+
+  if (chartInst) {
+    chartInst.data.datasets = datasets;
+    chartInst.update();
+  } else {
+    createChart(datasets);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────
+async function init() {
+  try {
+    const rows = await loadCSV();
+    allData = parseRows(rows);
+
+    // Unique pollsters, sorted by frequency
+    const freq = {};
+    allData.forEach(d => { freq[d.pollster] = (freq[d.pollster] || 0) + 1; });
+    allPollsters = [...new Set(allData.map(d => d.pollster))]
+      .sort((a, b) => freq[b] - freq[a]);
+    allPollsters.forEach((p, i) => { pollsterDash[p] = DASH_PATTERNS[i % DASH_PATTERNS.length]; });
+
+    // Default selections
+    PARTIES.forEach(p => { if (DEFAULT_PARTIES.has(p)) selectedParties.add(p); });
+    allPollsters.forEach(p => selectedPollsters.add(p));
+
+    // Last-update badge
+    const lastDate = allData
+      .map(d => d.date).sort()
+      .at(-1);
+    const lastRow = allData.find(d => d.date === lastDate);
+    if (lastRow) document.getElementById('badge').textContent = `עדכון: ${lastRow.displayDate}`;
+
+    renderPartyChips();
+    renderPollsterChips();
+
+    document.getElementById('loading').classList.add('hidden');
+    rebuildChart();
+  } catch (err) {
+    document.getElementById('loading').textContent = 'שגיאה בטעינת הנתונים';
+    console.error(err);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
