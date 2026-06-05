@@ -349,19 +349,16 @@ function renderPollsterChips() {
   sep.style.cssText = 'display:inline-block;width:1px;height:16px;background:var(--border);margin:0 4px;vertical-align:middle;align-self:center;';
   el.appendChild(sep);
 
-  // ── Per-pollster chips (disabled when average mode is on) ──
+  // ── Per-pollster chips ──
   allPollsters.forEach(pollster => {
-    const active  = selectedPollsters.has(pollster);
-    const chip    = document.createElement('button');
-    chip.className   = 'chip' + (active && !showAverage ? ' active' : '');
+    const active = selectedPollsters.has(pollster);
+    const chip   = document.createElement('button');
+    chip.className   = 'chip' + (active ? ' active' : '');
     chip.textContent = pollster;
     chip.style.color       = '#4a8ecc';
     chip.style.borderColor = '#4a8ecc';
-    chip.style.opacity     = showAverage ? '0.3' : '1';
-    chip.style.cursor      = showAverage ? 'default' : 'pointer';
-    if (active && !showAverage) chip.style.background = 'rgba(74,142,204,0.18)';
+    if (active) chip.style.background = 'rgba(74,142,204,0.18)';
     chip.onclick = () => {
-      if (showAverage) return;
       if (selectedPollsters.has(pollster)) {
         selectedPollsters.delete(pollster);
         chip.classList.remove('active');
@@ -396,10 +393,11 @@ function buildAverageDatasets() {
   const datasets = [];
   for (const party of selectedParties) {
     const color = PARTY_COLORS[party] || '#888';
-    // Group by week → then by pollster (to avoid double-counting same pollster twice in same week)
+    // Group by week → then by pollster, only for selected pollsters
     const weekMap = {};
     allData.forEach(d => {
       if (d.mandates[party] === null) return;
+      if (!selectedPollsters.has(d.pollster)) return;
       const wk = getMondayDate(d.date);
       if (!weekMap[wk]) weekMap[wk] = {};
       if (!weekMap[wk][d.pollster]) weekMap[wk][d.pollster] = { sum: 0, count: 0 };
