@@ -383,35 +383,54 @@ function buildDatasets() {
 }
 
 // ─────────────────────────────────────────────
-//  HOVER PLUGIN
+//  HOVER (canvas-level segment detection)
 // ─────────────────────────────────────────────
-const hoverPlugin = {
-  id: 'lineHover',
-  afterEvent(chart, args) {
-    const e = args.event;
-    if (e.type !== 'mousemove' && e.type !== 'mouseleave') return;
+function distToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  if (dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
 
+function applyHoverStyles() {
+  if (!chartInst) return;
+  chartInst.data.datasets.forEach((ds, i) => {
+    const on = hoveredIdx === -1 || i === hoveredIdx;
+    ds.borderColor  = on ? ds._baseColor : hex2rgba(ds._baseColor, 0.06);
+    ds.borderWidth  = (hoveredIdx !== -1 && i === hoveredIdx) ? 3.5 : 2;
+    ds.pointRadius  = (hoveredIdx !== -1 && i === hoveredIdx) ? 4   : 0;
+  });
+  chartInst.update('none');
+}
+
+function bindCanvasHover(canvas) {
+  canvas.addEventListener('mousemove', e => {
+    if (!chartInst) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const THRESHOLD = 8;
     let newIdx = -1;
-    if (e.type === 'mousemove') {
-      const els = chart.getElementsAtEventForMode(
-        e.native, 'dataset', { intersect: true }, true
-      );
-      if (els.length) newIdx = els[0].datasetIndex;
-    }
-
+    let minDist = THRESHOLD;
+    chartInst.data.datasets.forEach((ds, i) => {
+      const meta = chartInst.getDatasetMeta(i);
+      if (!meta.visible) return;
+      for (let j = 0; j < meta.data.length - 1; j++) {
+        const p1 = meta.data[j], p2 = meta.data[j + 1];
+        const d = distToSegment(mx, my, p1.x, p1.y, p2.x, p2.y);
+        if (d < minDist) { minDist = d; newIdx = i; }
+      }
+    });
     if (newIdx === hoveredIdx) return;
     hoveredIdx = newIdx;
-
-    chart.data.datasets.forEach((ds, i) => {
-      const on = newIdx === -1 || i === newIdx;
-      ds.borderColor  = on ? ds._baseColor : hex2rgba(ds._baseColor, 0.06);
-      ds.borderWidth  = (on && newIdx !== -1) ? 3.5 : 2;
-      ds.pointRadius  = (on && newIdx !== -1) ? 3   : 0;
-    });
-
-    chart.update('none');
-  }
-};
+    applyHoverStyles();
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (hoveredIdx === -1) return;
+    hoveredIdx = -1;
+    applyHoverStyles();
+  });
+}
 
 // ─────────────────────────────────────────────
 //  CHART
@@ -425,7 +444,7 @@ function createChart(datasets) {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 250 },
-      interaction: { mode: 'dataset', axis: 'xy', intersect: true },
+      interaction: { mode: 'point', intersect: true },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -439,6 +458,7 @@ function createChart(datasets) {
           titleFont:  { size: 12 },
           bodyFont:   { size: 12 },
           padding: 11,
+          filter(item) { return item.datasetIndex === hoveredIdx; },
           callbacks: {
             title(items) {
               return items[0].raw?._row?.displayDate ?? items[0].label;
@@ -486,8 +506,9 @@ function createChart(datasets) {
         }
       }
     },
-    plugins: [hoverPlugin]
+    plugins: []
   });
+  bindCanvasHover(canvas);
 }
 
 function rebuildChart() {
