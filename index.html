@@ -588,25 +588,20 @@ function rebuildChart() {
   const datasets = buildDatasets();
   hoveredIdx = -1;
 
-  const canvas  = document.getElementById('chart');
-  const noData  = document.getElementById('no-data');
+  const canvas = document.getElementById('chart');
+  const noData = document.getElementById('no-data');
+
+  if (chartInst) { chartInst.destroy(); chartInst = null; }
 
   if (!datasets.length) {
     canvas.style.display = 'none';
     noData.classList.remove('hidden');
-    if (chartInst) { chartInst.destroy(); chartInst = null; }
     return;
   }
 
   noData.classList.add('hidden');
   canvas.style.display = 'block';
-
-  if (chartInst) {
-    chartInst.data.datasets = datasets;
-    chartInst.update();
-  } else {
-    createChart(datasets);
-  }
+  createChart(datasets);
 }
 
 // ─────────────────────────────────────────────
