@@ -225,6 +225,7 @@ let selectedParties   = new Set();
 let selectedPollsters = new Set();
 let chartInst      = null;
 let hoveredIdx     = -1;
+let hoverAbort     = null;
 
 // ─────────────────────────────────────────────
 //  UTILS
@@ -404,6 +405,9 @@ function applyHoverStyles() {
 }
 
 function bindCanvasHover(canvas) {
+  if (hoverAbort) hoverAbort.abort();
+  hoverAbort = new AbortController();
+  const signal = hoverAbort.signal;
   canvas.addEventListener('mousemove', e => {
     if (!chartInst) return;
     const rect = canvas.getBoundingClientRect();
@@ -424,12 +428,12 @@ function bindCanvasHover(canvas) {
     if (newIdx === hoveredIdx) return;
     hoveredIdx = newIdx;
     applyHoverStyles();
-  });
+  }, { signal });
   canvas.addEventListener('mouseleave', () => {
     if (hoveredIdx === -1) return;
     hoveredIdx = -1;
     applyHoverStyles();
-  });
+  }, { signal });
 }
 
 // ─────────────────────────────────────────────
@@ -508,7 +512,6 @@ function createChart(datasets) {
     },
     plugins: []
   });
-  bindCanvasHover(canvas);
 }
 
 function rebuildChart() {
@@ -528,6 +531,7 @@ function rebuildChart() {
 
   noData.classList.add('hidden');
   canvas.style.display = 'block';
+  bindCanvasHover(canvas);
   createChart(datasets);
 }
 
