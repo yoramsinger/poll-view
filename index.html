@@ -223,7 +223,6 @@ let allPollsters   = [];
 let pollsterDash   = {};
 let selectedParties   = new Set();
 let selectedPollsters = new Set();
-let showAverage    = false;
 let chartInst      = null;
 let hoveredIdx     = -1;
 
@@ -235,20 +234,6 @@ function hex2rgba(hex, a) {
   const g = parseInt(hex.slice(3,5),16);
   const b = parseInt(hex.slice(5,7),16);
   return `rgba(${r},${g},${b},${a})`;
-}
-
-// Return the ISO Monday date string for a given YYYY-MM-DD date
-function getMondayDate(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  const day = d.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().slice(0, 10);
-}
-
-function formatDateHeb(isoStr) {
-  const d = new Date(isoStr + 'T12:00:00');
-  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
 }
 
 // ─────────────────────────────────────────────
@@ -326,30 +311,6 @@ function renderPartyChips() {
 function renderPollsterChips() {
   const el = document.getElementById('pollster-chips');
   el.innerHTML = '';
-
-  // ── Average chip ──
-  const avgChip = document.createElement('button');
-  avgChip.className = 'chip' + (showAverage ? ' active' : '');
-  avgChip.textContent = '⌀ ממוצע שבועי';
-  avgChip.style.color       = showAverage ? '#fff' : '#e8b84b';
-  avgChip.style.borderColor = '#e8b84b';
-  avgChip.style.fontWeight  = '600';
-  if (showAverage) avgChip.style.background = 'rgba(232,184,75,0.22)';
-  avgChip.onclick = () => {
-    showAverage = !showAverage;
-    avgChip.classList.toggle('active', showAverage);
-    avgChip.style.color      = showAverage ? '#fff' : '#e8b84b';
-    avgChip.style.background = showAverage ? 'rgba(232,184,75,0.22)' : '';
-    rebuildChart();
-  };
-  el.appendChild(avgChip);
-
-  // visual separator
-  const sep = document.createElement('span');
-  sep.style.cssText = 'display:inline-block;width:1px;height:16px;background:var(--border);margin:0 4px;vertical-align:middle;align-self:center;';
-  el.appendChild(sep);
-
-  // ── Per-pollster chips ──
   allPollsters.forEach(pollster => {
     const active = selectedPollsters.has(pollster);
     const chip   = document.createElement('button');
@@ -382,65 +343,14 @@ function selectAll(type) {
 
 function deselectAll(type) {
   if (type === 'party') { selectedParties.clear(); renderPartyChips(); }
-  else                  { selectedPollsters.clear(); showAverage = false; renderPollsterChips(); }
+  else                  { selectedPollsters.clear(); renderPollsterChips(); }
   rebuildChart();
 }
 
 // ─────────────────────────────────────────────
 //  DATASETS
 // ─────────────────────────────────────────────
-function buildAverageDatasets() {
-  const datasets = [];
-  for (const party of selectedParties) {
-    const color = PARTY_COLORS[party] || '#888';
-    // Group by week → then by pollster, only for selected pollsters
-    const weekMap = {};
-    allData.forEach(d => {
-      if (d.mandates[party] === null) return;
-      if (!selectedPollsters.has(d.pollster)) return;
-      const wk = getMondayDate(d.date);
-      if (!weekMap[wk]) weekMap[wk] = {};
-      if (!weekMap[wk][d.pollster]) weekMap[wk][d.pollster] = { sum: 0, count: 0 };
-      weekMap[wk][d.pollster].sum   += d.mandates[party];
-      weekMap[wk][d.pollster].count += 1;
-    });
-    const points = Object.entries(weekMap)
-      .map(([wk, byPollster]) => {
-        // Average within each pollster first, then average across pollsters
-        const perPollster = Object.values(byPollster).map(({ sum, count }) => sum / count);
-        const avg = perPollster.reduce((a, b) => a + b, 0) / perPollster.length;
-        return {
-          x:          wk,
-          y:          Math.round(avg * 10) / 10,
-          _count:     perPollster.length,
-          _isAverage: true,
-          _party:     party
-        };
-      })
-      .sort((a, b) => (a.x < b.x ? -1 : 1));
-    if (!points.length) continue;
-    datasets.push({
-      label:            `${party} – ממוצע`,
-      data:             points,
-      borderColor:      color,
-      backgroundColor:  hex2rgba(color, 0.12),
-      borderWidth:      3.5,
-      borderDash:       [],
-      pointRadius:      3,
-      pointHoverRadius: 7,
-      tension:          0.3,
-      fill:             false,
-      _baseColor:       color,
-      _party:           party,
-      _pollster:        'ממוצע',
-      _isAverage:       true
-    });
-  }
-  return datasets;
-}
-
 function buildDatasets() {
-  if (showAverage) return buildAverageDatasets();
   const datasets = [];
   for (const party of selectedParties) {
     const color = PARTY_COLORS[party] || '#888';
@@ -530,15 +440,10 @@ function createChart(datasets) {
           padding: 11,
           callbacks: {
             title(items) {
-              const raw = items[0].raw;
-              if (raw?._isAverage) return `שבוע ${formatDateHeb(raw.x)}`;
-              return raw?._row?.displayDate ?? items[0].label;
+              return items[0].raw?._row?.displayDate ?? items[0].label;
             },
             label(item) {
               const ds  = item.dataset;
-              if (ds._isAverage) {
-                return ` ${ds._party}: ${item.raw.y} מנדטים  (ממוצע ${item.raw._count} סקרים)`;
-              }
               const row = item.raw?._row;
               const med = row ? ` (${row.media})` : '';
               return ` ${ds._party}: ${item.raw.y} מנדטים — ${ds._pollster}${med}`;
