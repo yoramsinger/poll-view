@@ -349,16 +349,19 @@ function renderPollsterChips() {
   sep.style.cssText = 'display:inline-block;width:1px;height:16px;background:var(--border);margin:0 4px;vertical-align:middle;align-self:center;';
   el.appendChild(sep);
 
-  // ── Per-pollster chips ──
+  // ── Per-pollster chips (disabled when average mode is on) ──
   allPollsters.forEach(pollster => {
-    const active = selectedPollsters.has(pollster);
-    const chip   = document.createElement('button');
-    chip.className   = 'chip' + (active ? ' active' : '');
+    const active  = selectedPollsters.has(pollster);
+    const chip    = document.createElement('button');
+    chip.className   = 'chip' + (active && !showAverage ? ' active' : '');
     chip.textContent = pollster;
     chip.style.color       = '#4a8ecc';
     chip.style.borderColor = '#4a8ecc';
-    if (active) chip.style.background = 'rgba(74,142,204,0.18)';
+    chip.style.opacity     = showAverage ? '0.3' : '1';
+    chip.style.cursor      = showAverage ? 'default' : 'pointer';
+    if (active && !showAverage) chip.style.background = 'rgba(74,142,204,0.18)';
     chip.onclick = () => {
+      if (showAverage) return;
       if (selectedPollsters.has(pollster)) {
         selectedPollsters.delete(pollster);
         chip.classList.remove('active');
@@ -439,6 +442,7 @@ function buildAverageDatasets() {
 }
 
 function buildDatasets() {
+  if (showAverage) return buildAverageDatasets();
   const datasets = [];
   for (const party of selectedParties) {
     const color = PARTY_COLORS[party] || '#888';
@@ -466,8 +470,6 @@ function buildDatasets() {
       });
     }
   }
-  // Average lines always drawn on top
-  if (showAverage) datasets.push(...buildAverageDatasets());
   return datasets;
 }
 
