@@ -370,6 +370,7 @@ function buildDatasets() {
         borderDash:       pollsterDash[pollster] || [],
         pointRadius:      0,
         pointHoverRadius: 5,
+        pointHitRadius:   8,
         tension:          0.3,
         fill:             false,
         _baseColor:       color,
@@ -393,7 +394,7 @@ const hoverPlugin = {
     let newIdx = -1;
     if (e.type === 'mousemove') {
       const els = chart.getElementsAtEventForMode(
-        e.native, 'nearest', { intersect: false }, true
+        e.native, 'dataset', { intersect: true }, true
       );
       if (els.length) newIdx = els[0].datasetIndex;
     }
@@ -424,7 +425,7 @@ function createChart(datasets) {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 250 },
-      interaction: { mode: 'nearest', axis: 'xy', intersect: false },
+      interaction: { mode: 'dataset', axis: 'xy', intersect: true },
       plugins: {
         legend: { display: false },
         tooltip: {
