@@ -393,23 +393,29 @@ function buildAverageDatasets() {
   const datasets = [];
   for (const party of selectedParties) {
     const color = PARTY_COLORS[party] || '#888';
-    // Group all polls (all pollsters) by ISO week
+    // Group by week → then by pollster (to avoid double-counting same pollster twice in same week)
     const weekMap = {};
     allData.forEach(d => {
       if (d.mandates[party] === null) return;
       const wk = getMondayDate(d.date);
-      if (!weekMap[wk]) weekMap[wk] = { sum: 0, count: 0 };
-      weekMap[wk].sum   += d.mandates[party];
-      weekMap[wk].count += 1;
+      if (!weekMap[wk]) weekMap[wk] = {};
+      if (!weekMap[wk][d.pollster]) weekMap[wk][d.pollster] = { sum: 0, count: 0 };
+      weekMap[wk][d.pollster].sum   += d.mandates[party];
+      weekMap[wk][d.pollster].count += 1;
     });
     const points = Object.entries(weekMap)
-      .map(([wk, { sum, count }]) => ({
-        x:          wk,
-        y:          Math.round(sum / count * 10) / 10,
-        _count:     count,
-        _isAverage: true,
-        _party:     party
-      }))
+      .map(([wk, byPollster]) => {
+        // Average within each pollster first, then average across pollsters
+        const perPollster = Object.values(byPollster).map(({ sum, count }) => sum / count);
+        const avg = perPollster.reduce((a, b) => a + b, 0) / perPollster.length;
+        return {
+          x:          wk,
+          y:          Math.round(avg * 10) / 10,
+          _count:     perPollster.length,
+          _isAverage: true,
+          _party:     party
+        };
+      })
       .sort((a, b) => (a.x < b.x ? -1 : 1));
     if (!points.length) continue;
     datasets.push({
