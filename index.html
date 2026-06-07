@@ -370,7 +370,7 @@ function buildDatasets() {
         borderWidth:      2,
         borderDash:       pollsterDash[pollster] || [],
         pointRadius:      0,
-        pointHoverRadius: 5,
+        pointHoverRadius: 6,
         pointHitRadius:   8,
         tension:          0.3,
         fill:             false,
@@ -399,7 +399,14 @@ function applyHoverStyles() {
     const on = hoveredIdx === -1 || i === hoveredIdx;
     ds.borderColor  = on ? ds._baseColor : hex2rgba(ds._baseColor, 0.06);
     ds.borderWidth  = (hoveredIdx !== -1 && i === hoveredIdx) ? 3.5 : 2;
-    ds.pointRadius  = (hoveredIdx !== -1 && i === hoveredIdx) ? 4   : 0;
+    // For point visibility, we need to set pointRadius properly
+    if (hoveredIdx !== -1 && i === hoveredIdx) {
+      ds.pointRadius = 4;
+      ds.pointHoverRadius = 6;
+    } else {
+      ds.pointRadius = 0;
+      ds.pointHoverRadius = 0;
+    }
   });
   chartInst.update('none');
 }
