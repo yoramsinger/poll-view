@@ -123,6 +123,30 @@
     /* ── Scrollbar ── */
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── Zoom ── */
+    #zoom-select {
+      position: absolute;
+      pointer-events: none;
+      display: none;
+      background: rgba(74,142,204,0.12);
+      border-left:  1.5px solid rgba(74,142,204,0.55);
+      border-right: 1.5px solid rgba(74,142,204,0.55);
+    }
+    #zoom-tip {
+      position: absolute;
+      pointer-events: none;
+      display: none;
+      background: rgba(10,13,22,0.92);
+      border: 1px solid #2d3a56;
+      color: #cdd5e0;
+      font-size: 0.76rem;
+      padding: 3px 10px;
+      border-radius: 4px;
+      white-space: nowrap;
+      z-index: 10;
+    }
+    #btn-reset-zoom { display: none; color: var(--accent) !important; border-color: var(--accent) !important; }
   </style>
 </head>
 <body>
@@ -133,7 +157,10 @@
     <span style="font-size:1.2rem">📊</span>
     <h1>מעקב סקרים – כנסת ישראל</h1>
   </div>
-  <span class="header-meta" id="badge"></span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <button class="btn-xs" id="btn-reset-zoom" onclick="resetZoom()">↺ איפוס זום</button>
+    <span class="header-meta" id="badge"></span>
+  </div>
 </div>
 
 <!-- Filters -->
@@ -162,6 +189,8 @@
 <div class="chart-wrap">
   <div class="overlay" id="loading">טוען נתונים...</div>
   <div class="overlay hidden" id="no-data">אין נתונים — בחרו מפלגות וסוקרים</div>
+  <div id="zoom-select"></div>
+  <div id="zoom-tip"></div>
   <canvas id="chart"></canvas>
 </div>
 
@@ -233,6 +262,7 @@ let hoveredIdx     = -1;
 let hoverAbort     = null;
 let pinnedIdx      = -1; // Index of the pinned dataset
 let weeklyAvgMode  = false;
+let zoomActive     = false;
 
 // Debug function to log messages when DEBUG_MODE is enabled
 function debugLog(message) {
@@ -476,6 +506,53 @@ function buildWeeklyAvgDatasets() {
 }
 
 // ─────────────────────────────────────────────
+//  ZOOM
+// ─────────────────────────────────────────────
+function fmtDateTs(ts) {
+  const d = new Date(ts);
+  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+}
+
+function applyZoom(minTs, maxTs, startPx, endPx) {
+  if (!chartInst) return;
+  chartInst.options.scales.x.min = Math.min(minTs, maxTs);
+  chartInst.options.scales.x.max = Math.max(minTs, maxTs);
+  chartInst.update();
+  zoomActive = true;
+  const btn = document.getElementById('btn-reset-zoom');
+  if (btn) btn.style.display = 'inline-block';
+
+  // Show date-range tooltip briefly
+  const canvas = document.getElementById('chart');
+  const wrapEl = canvas.parentElement;
+  const canvasRect = canvas.getBoundingClientRect();
+  const wrapRect   = wrapEl.getBoundingClientRect();
+  const offX = canvasRect.left - wrapRect.left;
+  const offY = canvasRect.top  - wrapRect.top;
+  const ca   = chartInst.chartArea;
+  const centerPx = offX + (startPx + endPx) / 2;
+  const tip = document.getElementById('zoom-tip');
+  tip.textContent = `${fmtDateTs(Math.min(minTs, maxTs))} – ${fmtDateTs(Math.max(minTs, maxTs))}`;
+  tip.style.display = 'block';
+  tip.style.top  = Math.max(4, offY + ca.top - 30) + 'px';
+  tip.style.left = '0';
+  requestAnimationFrame(() => {
+    tip.style.left = Math.max(4, centerPx - tip.offsetWidth / 2) + 'px';
+  });
+  setTimeout(() => { tip.style.display = 'none'; }, 2500);
+}
+
+function resetZoom() {
+  if (!chartInst) return;
+  delete chartInst.options.scales.x.min;
+  delete chartInst.options.scales.x.max;
+  chartInst.update();
+  zoomActive = false;
+  const btn = document.getElementById('btn-reset-zoom');
+  if (btn) btn.style.display = 'none';
+}
+
+// ─────────────────────────────────────────────
 //  HOVER (canvas-level segment detection)
 // ─────────────────────────────────────────────
 function distToSegment(px, py, x1, y1, x2, y2) {
@@ -498,75 +575,153 @@ function applyHoverStyles() {
 }
 
 // ─────────────────────────────────────────────
-//  PIN MODE - Show value points with values
+//  INTERACTIONS  (hover, pin, drag-to-zoom)
 // ─────────────────────────────────────────────
 
 function bindCanvasHover(canvas) {
   if (hoverAbort) hoverAbort.abort();
   hoverAbort = new AbortController();
   const signal = hoverAbort.signal;
-  canvas.addEventListener('mousemove', e => {
-    if (!chartInst) return;
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const THRESHOLD = 8;
-    let newIdx = -1;
-    let minDist = THRESHOLD;
+
+  let dragStartX  = null;
+  let dragStartTs = null;
+  let isDragging  = false;
+  let mdOnLine    = false;
+  let mdLineIdx   = -1;
+  let docMoveHandler = null;
+  let docUpHandler   = null;
+
+  // Clean up document listeners if the chart is rebuilt while dragging
+  signal.addEventListener('abort', () => {
+    if (docMoveHandler) document.removeEventListener('mousemove', docMoveHandler);
+    if (docUpHandler)   document.removeEventListener('mouseup',   docUpHandler);
+    document.getElementById('zoom-select').style.display = 'none';
+    canvas.style.cursor = '';
+  });
+
+  function nearestDataset(mx, my, threshold) {
+    let idx = -1, minD = threshold;
     chartInst.data.datasets.forEach((ds, i) => {
       const meta = chartInst.getDatasetMeta(i);
       if (!meta.visible) return;
       for (let j = 0; j < meta.data.length - 1; j++) {
         const p1 = meta.data[j], p2 = meta.data[j + 1];
         const d = distToSegment(mx, my, p1.x, p1.y, p2.x, p2.y);
-        if (d < minDist) { minDist = d; newIdx = i; }
+        if (d < minD) { minD = d; idx = i; }
       }
     });
+    return idx;
+  }
+
+  function updateZoomRect(clientX) {
+    const ca = chartInst.chartArea;
+    const canvasRect = canvas.getBoundingClientRect();
+    const wrapRect   = canvas.parentElement.getBoundingClientRect();
+    const offX = canvasRect.left - wrapRect.left;
+    const offY = canvasRect.top  - wrapRect.top;
+    const rawMx      = clientX - canvasRect.left;
+    const clampedEnd = Math.max(ca.left, Math.min(ca.right, rawMx));
+    const clampedStart = Math.max(ca.left, Math.min(ca.right, dragStartX));
+    const left  = offX + Math.min(clampedStart, clampedEnd);
+    const right = offX + Math.max(clampedStart, clampedEnd);
+    const zs = document.getElementById('zoom-select');
+    zs.style.left    = left + 'px';
+    zs.style.width   = Math.max(0, right - left) + 'px';
+    zs.style.top     = (offY + ca.top) + 'px';
+    zs.style.height  = (ca.bottom - ca.top) + 'px';
+    zs.style.display = 'block';
+  }
+
+  function finishDrag(clientX) {
+    document.removeEventListener('mousemove', docMoveHandler);
+    document.removeEventListener('mouseup',   docUpHandler);
+    docMoveHandler = null; docUpHandler = null;
+    canvas.style.cursor = '';
+    document.getElementById('zoom-select').style.display = 'none';
+
+    if (isDragging) {
+      const ca   = chartInst.chartArea;
+      const rawMx = clientX - canvas.getBoundingClientRect().left;
+      // If released at or beyond right edge, snap to scale's current max
+      const endTs = (rawMx >= ca.right)
+        ? chartInst.scales.x.max
+        : chartInst.scales.x.getValueForPixel(rawMx);
+      const endPx = Math.min(ca.right, rawMx);
+      applyZoom(dragStartTs, endTs, dragStartX, endPx);
+    }
+    dragStartX = null; dragStartTs = null; isDragging = false;
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    if (!chartInst || e.button !== 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const idx = nearestDataset(mx, my, 10);
+    if (idx !== -1) {
+      mdOnLine = true; mdLineIdx = idx;
+    } else {
+      mdOnLine = false; mdLineIdx = -1;
+      dragStartX  = mx;
+      dragStartTs = chartInst.scales.x.getValueForPixel(mx);
+
+      docMoveHandler = ev => {
+        if (!isDragging) {
+          const curMx = ev.clientX - canvas.getBoundingClientRect().left;
+          if ((curMx - dragStartX) > 10) isDragging = true;
+        }
+        if (isDragging) { canvas.style.cursor = 'col-resize'; updateZoomRect(ev.clientX); }
+      };
+      docUpHandler = ev => {
+        const wasDragging = isDragging;
+        finishDrag(ev.clientX);
+        if (!wasDragging && pinnedIdx !== -1) {
+          debugLog(`Unpinning dataset ${pinnedIdx} due to click outside`);
+          pinnedIdx = -1;
+          applyHoverStyles();
+        }
+      };
+      document.addEventListener('mousemove', docMoveHandler);
+      document.addEventListener('mouseup',   docUpHandler);
+    }
+  }, { signal });
+
+  // Pin/unpin on mouseup when click was on a line
+  canvas.addEventListener('mouseup', e => {
+    if (!chartInst || !mdOnLine) { mdOnLine = false; mdLineIdx = -1; return; }
+    debugLog(`Click detected on dataset ${mdLineIdx}`);
+    if (pinnedIdx === mdLineIdx) {
+      debugLog(`Unpinning dataset ${mdLineIdx}`); pinnedIdx = -1;
+    } else {
+      debugLog(`Pinning dataset ${mdLineIdx}`);   pinnedIdx = mdLineIdx;
+    }
+    debugLog(`Applying hover styles. Hovered: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
+    applyHoverStyles();
+    mdOnLine = false; mdLineIdx = -1;
+  }, { signal });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!chartInst || dragStartX !== null) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const newIdx = nearestDataset(mx, my, 8);
     if (newIdx === hoveredIdx) return;
     hoveredIdx = newIdx;
     debugLog(`Hover changed. New hover index: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
-    // When hovering, we need to properly handle both hover and pin states
     applyHoverStyles();
   }, { signal });
+
   canvas.addEventListener('mouseleave', () => {
+    if (dragStartX !== null) return; // drag tracked on document — don't cancel
+    canvas.style.cursor = '';
     if (hoveredIdx === -1) return;
     hoveredIdx = -1;
     debugLog(`Mouse left. Hover index reset to: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
     applyHoverStyles();
   }, { signal });
 
-  canvas.addEventListener('click', e => {
-    if (!chartInst) return;
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    let clickedIdx = -1;
-    let minDist = 10;
-    chartInst.data.datasets.forEach((ds, i) => {
-      const meta = chartInst.getDatasetMeta(i);
-      if (!meta.visible) return;
-      for (let j = 0; j < meta.data.length - 1; j++) {
-        const p1 = meta.data[j], p2 = meta.data[j + 1];
-        const d = distToSegment(mx, my, p1.x, p1.y, p2.x, p2.y);
-        if (d < minDist) { minDist = d; clickedIdx = i; }
-      }
-    });
-    if (clickedIdx !== -1) {
-      debugLog(`Click detected on dataset ${clickedIdx}`);
-      if (pinnedIdx === clickedIdx) {
-        debugLog(`Unpinning dataset ${clickedIdx}`);
-        pinnedIdx = -1;
-      } else {
-        debugLog(`Pinning dataset ${clickedIdx}`);
-        pinnedIdx = clickedIdx;
-      }
-    } else if (pinnedIdx !== -1) {
-      debugLog(`Unpinning dataset ${pinnedIdx} due to click outside`);
-      pinnedIdx = -1;
-    }
-    debugLog(`Applying hover styles. Hovered: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
-    applyHoverStyles();
-  }, { signal });
+  canvas.addEventListener('dblclick', () => resetZoom(), { signal });
 }
 
 // ─────────────────────────────────────────────
@@ -662,6 +817,9 @@ function rebuildChart() {
   const datasets = weeklyAvgMode ? buildWeeklyAvgDatasets() : buildDatasets();
   hoveredIdx = -1;
   pinnedIdx  = -1;
+  zoomActive = false;
+  const btnZ = document.getElementById('btn-reset-zoom');
+  if (btnZ) btnZ.style.display = 'none';
 
   const canvas = document.getElementById('chart');
   const noData = document.getElementById('no-data');
