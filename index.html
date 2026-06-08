@@ -465,7 +465,7 @@ function buildWeeklyAvgDatasets() {
       pointRadius:      (ctx) => (ctx.datasetIndex === hoveredIdx || ctx.datasetIndex === pinnedIdx) ? 4 : 0,
       pointHoverRadius: 6,
       pointHitRadius:   8,
-      tension:          0.3,
+      tension:          0,
       fill:             false,
       _baseColor:       color,
       _party:           party,
@@ -532,7 +532,39 @@ function bindCanvasHover(canvas) {
     if (hoveredIdx === -1) return;
     hoveredIdx = -1;
     debugLog(`Mouse left. Hover index reset to: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
-    // When leaving, we need to properly handle both hover and pin states
+    applyHoverStyles();
+  }, { signal });
+
+  canvas.addEventListener('click', e => {
+    if (!chartInst) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    let clickedIdx = -1;
+    let minDist = 10;
+    chartInst.data.datasets.forEach((ds, i) => {
+      const meta = chartInst.getDatasetMeta(i);
+      if (!meta.visible) return;
+      for (let j = 0; j < meta.data.length - 1; j++) {
+        const p1 = meta.data[j], p2 = meta.data[j + 1];
+        const d = distToSegment(mx, my, p1.x, p1.y, p2.x, p2.y);
+        if (d < minDist) { minDist = d; clickedIdx = i; }
+      }
+    });
+    if (clickedIdx !== -1) {
+      debugLog(`Click detected on dataset ${clickedIdx}`);
+      if (pinnedIdx === clickedIdx) {
+        debugLog(`Unpinning dataset ${clickedIdx}`);
+        pinnedIdx = -1;
+      } else {
+        debugLog(`Pinning dataset ${clickedIdx}`);
+        pinnedIdx = clickedIdx;
+      }
+    } else if (pinnedIdx !== -1) {
+      debugLog(`Unpinning dataset ${pinnedIdx} due to click outside`);
+      pinnedIdx = -1;
+    }
+    debugLog(`Applying hover styles. Hovered: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
     applyHoverStyles();
   }, { signal });
 }
@@ -624,61 +656,6 @@ function createChart(datasets) {
     plugins: []
   });
   
-  // Add click event to the canvas for pinning functionality
-  canvas.addEventListener('click', function(e) {
-    if (!chartInst) return;
-    
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    
-    let clickedIdx = -1;
-    let minDist = 10; // Slightly larger threshold for clicking
-    
-    chartInst.data.datasets.forEach((ds, i) => {
-      const meta = chartInst.getDatasetMeta(i);
-      if (!meta.visible) return;
-      for (let j = 0; j < meta.data.length - 1; j++) {
-        const p1 = meta.data[j], p2 = meta.data[j + 1];
-        // Calculate distance from mouse to line segment
-        const dx = p2.x - p1.x, dy = p2.y - p1.y;
-        if (dx === 0 && dy === 0) continue; // Skip zero-length segments
-        
-        const t = Math.max(0, Math.min(1, ((mx - p1.x) * dx + (my - p1.y) * dy) / (dx * dx + dy * dy)));
-        const px = p1.x + t * dx;
-        const py = p1.y + t * dy;
-        const d = Math.hypot(mx - px, my - py);
-        
-        if (d < minDist) { 
-          minDist = d; 
-          clickedIdx = i; 
-        }
-      }
-    });
-    
-    // If we clicked on a dataset line, toggle pinning
-    if (clickedIdx !== -1) {
-      debugLog(`Click detected on dataset ${clickedIdx}`);
-      // Toggle pinning: if clicking the same dataset, unpin it; otherwise pin the new one
-      if (pinnedIdx === clickedIdx) {
-        debugLog(`Unpinning dataset ${clickedIdx}`);
-        pinnedIdx = -1; // Unpin
-      } else {
-        debugLog(`Pinning dataset ${clickedIdx}`);
-        pinnedIdx = clickedIdx; // Pin new dataset
-      }
-    } else {
-      // Clicked outside any dataset line - unpin if something was pinned
-      if (pinnedIdx !== -1) {
-        debugLog(`Unpinning dataset ${pinnedIdx} due to click outside`);
-        pinnedIdx = -1;
-      }
-    }
-    
-    // Apply the hover styles to properly update point visibility
-    debugLog(`Applying hover styles. Hovered: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
-    applyHoverStyles();
-  });
 }
 
 function rebuildChart() {
