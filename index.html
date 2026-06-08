@@ -80,6 +80,7 @@
       transition: all 0.12s;
     }
     .btn-xs:hover { background: var(--surface2); color: var(--text); }
+    .btn-avg.active { background: rgba(74,142,204,0.22); color: var(--accent) !important; border-color: var(--accent) !important; }
 
     .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 
@@ -151,6 +152,7 @@
       <h3>סוקרים</h3>
       <button class="btn-xs" onclick="selectAll('pollster')">הכל</button>
       <button class="btn-xs" onclick="deselectAll('pollster')">נקה</button>
+      <button class="btn-xs btn-avg" id="btn-weekly-avg" onclick="toggleWeeklyAvg()">⌀ ממוצע שבועי</button>
     </div>
     <div class="chips" id="pollster-chips"></div>
   </div>
@@ -178,6 +180,9 @@ const PARTIES = [
   'רע״מ','בל״ד','עוצמה יהודית','ביחד (בנט ולפיד)',
   'ישר!','המילואימניקים','רשימה ערבית מאוחדת'
 ];
+
+// Debug flag - set to true to enable console debugging
+const DEBUG_MODE = true;
 
 const PARTY_COLORS = {
   'הליכוד':              '#1565C0',
@@ -226,6 +231,15 @@ let selectedPollsters = new Set();
 let chartInst      = null;
 let hoveredIdx     = -1;
 let hoverAbort     = null;
+let pinnedIdx      = -1; // Index of the pinned dataset
+let weeklyAvgMode  = false;
+
+// Debug function to log messages when DEBUG_MODE is enabled
+function debugLog(message) {
+  if (DEBUG_MODE) {
+    console.log('[PIN MODE DEBUG]', message);
+  }
+}
 
 // ─────────────────────────────────────────────
 //  UTILS
@@ -242,12 +256,20 @@ function hex2rgba(hex, a) {
 // ─────────────────────────────────────────────
 function loadCSV() {
   return new Promise((resolve, reject) => {
+    // Try to load from polls.csv directly
     Papa.parse('polls.csv', {
       download: true,
       header: false,
       skipEmptyLines: true,
       complete: r => resolve(r.data),
-      error: e => reject(e)
+      error: e => {
+        console.error('Failed to load CSV from polls.csv:', e);
+        // If we're in a local environment and can't access the file, 
+        // provide a more helpful message but don't reject
+        console.log('Note: Running locally without web server. The application will work properly when deployed to GitHub Pages.');
+        // Return empty data to prevent complete failure
+        resolve([]);
+      }
     });
   });
 }
@@ -261,7 +283,13 @@ function parseRows(rows) {
 
       const mandates = {};
       PARTIES.forEach((p, i) => {
-        const raw = (row[6 + i] ?? '').toString().trim();
+        // Handle potential undefined or null values in CSV
+        let raw = row[6 + i];
+        if (raw === undefined || raw === null) {
+          raw = '';
+        } else {
+          raw = raw.toString().trim();
+        }
         const v   = raw === '' ? NaN : parseInt(raw, 10);
         mandates[p] = isNaN(v) ? null : v;
       });
@@ -369,7 +397,7 @@ function buildDatasets() {
         backgroundColor:  hex2rgba(color, 0.07),
         borderWidth:      2,
         borderDash:       pollsterDash[pollster] || [],
-        pointRadius:      0,
+        pointRadius:      (ctx) => (ctx.datasetIndex === hoveredIdx || ctx.datasetIndex === pinnedIdx) ? 4 : 0,
         pointHoverRadius: 6,
         pointHitRadius:   8,
         tension:          0.3,
@@ -379,6 +407,70 @@ function buildDatasets() {
         _pollster:        pollster
       });
     }
+  }
+  return datasets;
+}
+
+// ─────────────────────────────────────────────
+//  WEEKLY AVERAGE
+// ─────────────────────────────────────────────
+function toggleWeeklyAvg() {
+  weeklyAvgMode = !weeklyAvgMode;
+  const btn = document.getElementById('btn-weekly-avg');
+  if (btn) btn.classList.toggle('active', weeklyAvgMode);
+  rebuildChart();
+}
+
+function buildWeeklyAvgDatasets() {
+  const datasets = [];
+  for (const party of selectedParties) {
+    const color = PARTY_COLORS[party] || '#888';
+
+    // Group polls by weekKey (Sunday of that week) and pollster
+    const weekMap = {}; // weekKey -> { pollster -> [values] }
+    for (const d of allData) {
+      if (!selectedPollsters.has(d.pollster)) continue;
+      if (d.mandates[party] === null) continue;
+      const dt  = new Date(d.date);
+      const sun = new Date(dt);
+      sun.setDate(dt.getDate() - dt.getDay()); // rewind to Sunday
+      const weekKey = sun.toISOString().slice(0, 10);
+      if (!weekMap[weekKey]) weekMap[weekKey] = {};
+      if (!weekMap[weekKey][d.pollster]) weekMap[weekKey][d.pollster] = [];
+      weekMap[weekKey][d.pollster].push(d.mandates[party]);
+    }
+
+    const points = Object.keys(weekMap).sort().map(weekKey => {
+      // Average per pollster first (avoid double-counting same pollster's polls)
+      const pollsterAvgs = Object.values(weekMap[weekKey])
+        .map(vals => vals.reduce((a, b) => a + b, 0) / vals.length);
+      // Then average across pollsters
+      const avg = Math.round(
+        pollsterAvgs.reduce((a, b) => a + b, 0) / pollsterAvgs.length * 10
+      ) / 10;
+      const dt = new Date(weekKey);
+      const weekLabel = `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${String(dt.getFullYear()).slice(2)}`;
+      return { x: weekKey, y: avg, _isAvg: true, _weekLabel: weekLabel };
+    });
+
+    if (!points.length) continue;
+
+    datasets.push({
+      label:            party,
+      data:             points,
+      borderColor:      color,
+      backgroundColor:  hex2rgba(color, 0.07),
+      borderWidth:      2.5,
+      borderDash:       [],
+      pointRadius:      (ctx) => (ctx.datasetIndex === hoveredIdx || ctx.datasetIndex === pinnedIdx) ? 4 : 0,
+      pointHoverRadius: 6,
+      pointHitRadius:   8,
+      tension:          0.3,
+      fill:             false,
+      _baseColor:       color,
+      _party:           party,
+      _pollster:        null
+    });
   }
   return datasets;
 }
@@ -395,21 +487,19 @@ function distToSegment(px, py, x1, y1, x2, y2) {
 
 function applyHoverStyles() {
   if (!chartInst) return;
+  debugLog(`applyHoverStyles called. Hovered: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
+  const anyActive = hoveredIdx !== -1 || pinnedIdx !== -1;
   chartInst.data.datasets.forEach((ds, i) => {
-    const on = hoveredIdx === -1 || i === hoveredIdx;
-    ds.borderColor  = on ? ds._baseColor : hex2rgba(ds._baseColor, 0.06);
-    ds.borderWidth  = (hoveredIdx !== -1 && i === hoveredIdx) ? 3.5 : 2;
-    // For point visibility, we need to set pointRadius properly
-    if (hoveredIdx !== -1 && i === hoveredIdx) {
-      ds.pointRadius = 4;
-      ds.pointHoverRadius = 6;
-    } else {
-      ds.pointRadius = 0;
-      ds.pointHoverRadius = 0;
-    }
+    const isHighlighted = anyActive && (i === hoveredIdx || i === pinnedIdx);
+    ds.borderColor = (!anyActive || isHighlighted) ? ds._baseColor : hex2rgba(ds._baseColor, 0.06);
+    ds.borderWidth = isHighlighted ? 3.5 : 2;
   });
   chartInst.update('none');
 }
+
+// ─────────────────────────────────────────────
+//  PIN MODE - Show value points with values
+// ─────────────────────────────────────────────
 
 function bindCanvasHover(canvas) {
   if (hoverAbort) hoverAbort.abort();
@@ -434,11 +524,15 @@ function bindCanvasHover(canvas) {
     });
     if (newIdx === hoveredIdx) return;
     hoveredIdx = newIdx;
+    debugLog(`Hover changed. New hover index: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
+    // When hovering, we need to properly handle both hover and pin states
     applyHoverStyles();
   }, { signal });
   canvas.addEventListener('mouseleave', () => {
     if (hoveredIdx === -1) return;
     hoveredIdx = -1;
+    debugLog(`Mouse left. Hover index reset to: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
+    // When leaving, we need to properly handle both hover and pin states
     applyHoverStyles();
   }, { signal });
 }
@@ -469,16 +563,26 @@ function createChart(datasets) {
           titleFont:  { size: 12 },
           bodyFont:   { size: 12 },
           padding: 11,
-          filter(item) { return item.datasetIndex === hoveredIdx; },
+          filter(item) { 
+            // Show tooltip for pinned dataset or hovered dataset
+            return item.datasetIndex === hoveredIdx || item.datasetIndex === pinnedIdx; 
+          },
           callbacks: {
             title(items) {
-              return items[0].raw?._row?.displayDate ?? items[0].label;
+              if (!items || items.length === 0) return 'תאריך לא זמין';
+              const item = items[0];
+              if (item?.raw?._isAvg) return `שבוע ${item.raw._weekLabel}`;
+              if (item?.raw?._row?.displayDate) return item.raw._row.displayDate;
+              return item?.label || 'תאריך לא זמין';
             },
             label(item) {
-              const ds  = item.dataset;
+              const ds = item.dataset;
+              if (item.raw?._isAvg) {
+                return ` ${ds._party}: ${item.raw.y} מנדטים (ממוצע שבועי)`;
+              }
               const row = item.raw?._row;
-              const med = row ? ` (${row.media})` : '';
-              return ` ${ds._party}: ${item.raw.y} מנדטים — ${ds._pollster}${med}`;
+              const med = row?.media ? ` (${row.media})` : '';
+              return ` ${ds._party}: ${item.raw?.y ?? '?'} מנדטים — ${ds._pollster}${med}`;
             },
             labelColor(item) {
               const c = item.dataset._baseColor;
@@ -519,11 +623,68 @@ function createChart(datasets) {
     },
     plugins: []
   });
+  
+  // Add click event to the canvas for pinning functionality
+  canvas.addEventListener('click', function(e) {
+    if (!chartInst) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    
+    let clickedIdx = -1;
+    let minDist = 10; // Slightly larger threshold for clicking
+    
+    chartInst.data.datasets.forEach((ds, i) => {
+      const meta = chartInst.getDatasetMeta(i);
+      if (!meta.visible) return;
+      for (let j = 0; j < meta.data.length - 1; j++) {
+        const p1 = meta.data[j], p2 = meta.data[j + 1];
+        // Calculate distance from mouse to line segment
+        const dx = p2.x - p1.x, dy = p2.y - p1.y;
+        if (dx === 0 && dy === 0) continue; // Skip zero-length segments
+        
+        const t = Math.max(0, Math.min(1, ((mx - p1.x) * dx + (my - p1.y) * dy) / (dx * dx + dy * dy)));
+        const px = p1.x + t * dx;
+        const py = p1.y + t * dy;
+        const d = Math.hypot(mx - px, my - py);
+        
+        if (d < minDist) { 
+          minDist = d; 
+          clickedIdx = i; 
+        }
+      }
+    });
+    
+    // If we clicked on a dataset line, toggle pinning
+    if (clickedIdx !== -1) {
+      debugLog(`Click detected on dataset ${clickedIdx}`);
+      // Toggle pinning: if clicking the same dataset, unpin it; otherwise pin the new one
+      if (pinnedIdx === clickedIdx) {
+        debugLog(`Unpinning dataset ${clickedIdx}`);
+        pinnedIdx = -1; // Unpin
+      } else {
+        debugLog(`Pinning dataset ${clickedIdx}`);
+        pinnedIdx = clickedIdx; // Pin new dataset
+      }
+    } else {
+      // Clicked outside any dataset line - unpin if something was pinned
+      if (pinnedIdx !== -1) {
+        debugLog(`Unpinning dataset ${pinnedIdx} due to click outside`);
+        pinnedIdx = -1;
+      }
+    }
+    
+    // Apply the hover styles to properly update point visibility
+    debugLog(`Applying hover styles. Hovered: ${hoveredIdx}, Pinned: ${pinnedIdx}`);
+    applyHoverStyles();
+  });
 }
 
 function rebuildChart() {
-  const datasets = buildDatasets();
+  const datasets = weeklyAvgMode ? buildWeeklyAvgDatasets() : buildDatasets();
   hoveredIdx = -1;
+  pinnedIdx  = -1;
 
   const canvas = document.getElementById('chart');
   const noData = document.getElementById('no-data');
@@ -548,7 +709,16 @@ function rebuildChart() {
 async function init() {
   try {
     const rows = await loadCSV();
-    allData = parseRows(rows);
+    
+    // If we got empty data, show a message but don't fail completely
+    if (!rows || rows.length < 2) {
+      console.warn('No data loaded from CSV. This is expected when running locally without a web server.');
+      document.getElementById('loading').textContent = 'הנתונים לא נטענו - יש להריץ את האפליקציה דרך שרת אינטרנט';
+      // Still try to initialize with empty data to avoid complete failure
+      allData = [];
+    } else {
+      allData = parseRows(rows);
+    }
 
     // Unique pollsters, sorted by frequency
     const freq = {};
@@ -575,7 +745,7 @@ async function init() {
     rebuildChart();
   } catch (err) {
     document.getElementById('loading').textContent = 'שגיאה בטעינת הנתונים';
-    console.error(err);
+    console.error('Error loading data:', err);
   }
 }
 
