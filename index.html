@@ -307,7 +307,7 @@ function loadCSV() {
 function parseRows(rows) {
   return rows.slice(1)
     .map(row => {
-      const pollster = (row[5] || '').trim();
+      const pollster = (row[4] || '').trim();
       const date     = (row[1] || '').trim();
       if (!date || !pollster) return null;
 
@@ -328,7 +328,7 @@ function parseRows(rows) {
         id:          row[0],
         date,
         displayDate: row[2],
-        media:       (row[4] || '').trim(),
+        media:       '',
         pollster,
         mandates
       };
